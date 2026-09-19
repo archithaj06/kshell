@@ -10,4 +10,10 @@ int note_write(const char *text);
 /* Print the current kernel note to stdout. */
 int note_read(void);
 
+/* Discard the kernel note via ioctl. */
+int note_clear(void);
+
+/* Print the kernel note's length in bytes via ioctl. */
+int note_len(void);
+
 #endif

@@ -4,9 +4,11 @@
  * kernel routes those syscalls to the driver's file_operations.
  */
 #include "note.h"
+#include "kshellnote_ioctl.h"
 
 #include <errno.h>
 #include <fcntl.h>
+#include <sys/ioctl.h>
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
@@ -57,6 +59,39 @@ int note_read(void)
     if (n < 0) {
         fprintf(stderr, "kshell: note: read: %s\n", strerror(errno));
         rc = 1;
+    }
+    close(fd);
+    return rc;
+}
+
+int note_clear(void)
+{
+    int fd = open_device(O_WRONLY);
+    if (fd < 0)
+        return 1;
+
+    int rc = 0;
+    if (ioctl(fd, KSHELLNOTE_IOC_CLEAR) < 0) {
+        fprintf(stderr, "kshell: note: ioctl(CLEAR): %s\n", strerror(errno));
+        rc = 1;
+    }
+    close(fd);
+    return rc;
+}
+
+int note_len(void)
+{
+    int fd = open_device(O_RDONLY);
+    if (fd < 0)
+        return 1;
+
+    int len = 0;
+    int rc = 0;
+    if (ioctl(fd, KSHELLNOTE_IOC_GETLEN, &len) < 0) {
+        fprintf(stderr, "kshell: note: ioctl(GETLEN): %s\n", strerror(errno));
+        rc = 1;
+    } else {
+        printf("%d\n", len);
     }
     close(fd);
     return rc;

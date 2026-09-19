@@ -48,14 +48,22 @@ static int bi_exit(char *const argv[])
 /*
  * note write <text...>  -> replace the kernel note with the joined words
  * note read             -> print the kernel note
+ * note clear            -> discard the kernel note (ioctl)
+ * note len              -> print the note length in bytes (ioctl)
  */
 static int bi_note(char *const argv[])
 {
-    if (argv[1] != NULL && strcmp(argv[1], "read") == 0 && argv[2] == NULL)
-        return note_read();
+    if (argv[1] != NULL && argv[2] == NULL) {
+        if (strcmp(argv[1], "read") == 0)
+            return note_read();
+        if (strcmp(argv[1], "clear") == 0)
+            return note_clear();
+        if (strcmp(argv[1], "len") == 0)
+            return note_len();
+    }
 
     if (argv[1] == NULL || strcmp(argv[1], "write") != 0 || argv[2] == NULL) {
-        fprintf(stderr, "usage: note write <text> | note read\n");
+        fprintf(stderr, "usage: note write <text> | note read | note clear | note len\n");
         return 2;
     }
 

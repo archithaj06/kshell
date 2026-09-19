@@ -16,6 +16,8 @@
 #include <linux/uaccess.h>
 #include <linux/version.h>
 
+#include "kshellnote_ioctl.h"
+
 #define DEVICE_NAME   "kshellnote"
 #define CLASS_NAME    "kshell"
 #define NOTE_BUF_SIZE 4096
@@ -75,12 +77,43 @@ static ssize_t note_write(struct file *filp, const char __user *ubuf,
 	return ret;
 }
 
+/*
+ * ioctl: control operations that do not fit read/write. `cmd` encodes
+ * direction, size, magic and number (see kshellnote_ioctl.h); `arg` is a
+ * user pointer or plain integer depending on the command.
+ */
+static long note_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
+{
+	int len;
+
+	switch (cmd) {
+	case KSHELLNOTE_IOC_CLEAR:
+		if (mutex_lock_interruptible(&note_lock))
+			return -ERESTARTSYS;
+		note_len = 0;
+		mutex_unlock(&note_lock);
+		return 0;
+
+	case KSHELLNOTE_IOC_GETLEN:
+		if (mutex_lock_interruptible(&note_lock))
+			return -ERESTARTSYS;
+		len = note_len;
+		mutex_unlock(&note_lock);
+		/* put_user checks the pointer and copies one int to userspace. */
+		return put_user(len, (int __user *)arg);
+
+	default:
+		return -ENOTTY;         /* "not a typewriter": unknown ioctl */
+	}
+}
+
 static const struct file_operations note_fops = {
-	.owner   = THIS_MODULE,
-	.open    = note_open,
-	.release = note_release,
-	.read    = note_read,
-	.write   = note_write,
+	.owner          = THIS_MODULE,
+	.open           = note_open,
+	.release        = note_release,
+	.read           = note_read,
+	.write          = note_write,
+	.unlocked_ioctl = note_ioctl,
 };
 
 static int __init kshellnote_init(void)
