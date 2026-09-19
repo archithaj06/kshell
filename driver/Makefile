@@ -5,7 +5,7 @@ obj-m := kshellnote.o
 KDIR ?= /lib/modules/$(shell uname -r)/build
 PWD  := $(shell pwd)
 
-.PHONY: all clean load unload
+.PHONY: all clean load unload install-udev
 
 all:
 	$(MAKE) -C $(KDIR) M=$(PWD) modules
@@ -18,3 +18,8 @@ load: all
 
 unload:
 	sudo rmmod kshellnote
+
+# Let non-root users open /dev/kshellnote (udev applies MODE=0666 on create).
+install-udev:
+	sudo install -m 644 99-kshellnote.rules /etc/udev/rules.d/99-kshellnote.rules
+	sudo udevadm control --reload-rules

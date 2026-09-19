@@ -1,0 +1,1 @@
+KERNEL=="kshellnote", MODE="0666"
