@@ -211,5 +211,5 @@ module_init(kshellnote_init);
 module_exit(kshellnote_exit);
 
 MODULE_LICENSE("GPL");
-MODULE_AUTHOR("Hemanth Simhadri");
+MODULE_AUTHOR("Architha Joshi");
 MODULE_DESCRIPTION("kshell note buffer character devices");
