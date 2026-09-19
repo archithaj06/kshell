@@ -1,32 +1,35 @@
 /*
  * Userspace side of the kshellnote driver. Nothing here is special: the
  * device is opened, read and written exactly like a regular file, and the
- * kernel routes those syscalls to the driver's file_operations.
+ * kernel routes those syscalls to the driver's file_operations. ioctl()
+ * is the escape hatch for operations that are not reads or writes.
  */
 #include "note.h"
-#include "kshellnote_ioctl.h"
 
 #include <errno.h>
 #include <fcntl.h>
-#include <sys/ioctl.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <unistd.h>
 
-static int open_device(int flags)
+static int open_device(int slot, int flags)
 {
-    int fd = open(NOTE_DEVICE, flags);
+    char path[32];
+    snprintf(path, sizeof path, NOTE_DEVICE_FMT, slot);
+
+    int fd = open(path, flags);
     if (fd < 0) {
-        fprintf(stderr, "kshell: note: %s: %s\n", NOTE_DEVICE, strerror(errno));
+        fprintf(stderr, "kshell: note: %s: %s\n", path, strerror(errno));
         if (errno == ENOENT)
             fprintf(stderr, "kshell: note: is the kshellnote module loaded?\n");
     }
     return fd;
 }
 
-int note_write(const char *text)
+int note_write(int slot, const char *text)
 {
-    int fd = open_device(O_WRONLY);
+    int fd = open_device(slot, O_WRONLY);
     if (fd < 0)
         return 1;
 
@@ -44,9 +47,9 @@ int note_write(const char *text)
     return rc;
 }
 
-int note_read(void)
+int note_read(int slot)
 {
-    int fd = open_device(O_RDONLY);
+    int fd = open_device(slot, O_RDONLY);
     if (fd < 0)
         return 1;
 
@@ -64,9 +67,9 @@ int note_read(void)
     return rc;
 }
 
-int note_clear(void)
+int note_clear(int slot)
 {
-    int fd = open_device(O_WRONLY);
+    int fd = open_device(slot, O_WRONLY);
     if (fd < 0)
         return 1;
 
@@ -79,9 +82,9 @@ int note_clear(void)
     return rc;
 }
 
-int note_len(void)
+int note_len(int slot)
 {
-    int fd = open_device(O_RDONLY);
+    int fd = open_device(slot, O_RDONLY);
     if (fd < 0)
         return 1;
 

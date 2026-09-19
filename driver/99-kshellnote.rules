@@ -1,1 +1,2 @@
-KERNEL=="kshellnote", MODE="0666"
+KERNEL=="kshellnote[0-9]*", MODE="0666"
+KERNEL=="kshellnote0", SYMLINK+="kshellnote"

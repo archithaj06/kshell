@@ -1,6 +1,7 @@
 #include "builtins.h"
 #include "note.h"
 
+#include <ctype.h>
 #include <errno.h>
 #include <limits.h>
 #include <stdio.h>
@@ -46,40 +47,68 @@ static int bi_exit(char *const argv[])
 }
 
 /*
- * note write <text...>  -> replace the kernel note with the joined words
- * note read             -> print the kernel note
- * note clear            -> discard the kernel note (ioctl)
- * note len              -> print the note length in bytes (ioctl)
+ * note [N] write <text...>  -> replace note N with the joined words
+ * note [N] read             -> print note N
+ * note [N] clear            -> discard note N (ioctl)
+ * note [N] len              -> print note N's length in bytes (ioctl)
+ *
+ * N selects /dev/kshellnoteN and defaults to 0.
  */
+static int note_usage(void)
+{
+    fprintf(stderr, "usage: note [0-%d] write <text> | read | clear | len\n",
+            KSHELLNOTE_COUNT - 1);
+    return 2;
+}
+
 static int bi_note(char *const argv[])
 {
-    if (argv[1] != NULL && argv[2] == NULL) {
-        if (strcmp(argv[1], "read") == 0)
-            return note_read();
-        if (strcmp(argv[1], "clear") == 0)
-            return note_clear();
-        if (strcmp(argv[1], "len") == 0)
-            return note_len();
+    int slot = 0;
+    int i = 1;
+
+    /* Optional leading slot number. */
+    if (argv[i] != NULL && isdigit((unsigned char)argv[i][0])) {
+        char *end;
+        long v = strtol(argv[i], &end, 10);
+        if (*end != '\0' || v < 0 || v >= KSHELLNOTE_COUNT) {
+            fprintf(stderr, "kshell: note: slot must be 0-%d\n", KSHELLNOTE_COUNT - 1);
+            return 2;
+        }
+        slot = (int)v;
+        i++;
     }
 
-    if (argv[1] == NULL || strcmp(argv[1], "write") != 0 || argv[2] == NULL) {
-        fprintf(stderr, "usage: note write <text> | note read | note clear | note len\n");
-        return 2;
+    const char *cmd = argv[i];
+    if (cmd == NULL)
+        return note_usage();
+    char *const *rest = &argv[i + 1];
+
+    if (rest[0] == NULL) {
+        if (strcmp(cmd, "read") == 0)
+            return note_read(slot);
+        if (strcmp(cmd, "clear") == 0)
+            return note_clear(slot);
+        if (strcmp(cmd, "len") == 0)
+            return note_len(slot);
+        return note_usage();
     }
+
+    if (strcmp(cmd, "write") != 0)
+        return note_usage();
 
     /* Re-join the remaining words with single spaces. */
     char text[NOTE_MAX_LEN] = "";
     size_t used = 0;
-    for (int i = 2; argv[i] != NULL; i++) {
+    for (int j = 0; rest[j] != NULL; j++) {
         int n = snprintf(text + used, sizeof text - used, "%s%s",
-                         i > 2 ? " " : "", argv[i]);
+                         j > 0 ? " " : "", rest[j]);
         if (n < 0 || (size_t)n >= sizeof text - used) {
             fprintf(stderr, "kshell: note: text too long (max %d bytes)\n", NOTE_MAX_LEN - 1);
             return 1;
         }
         used += (size_t)n;
     }
-    return note_write(text);
+    return note_write(slot, text);
 }
 
 struct builtin {

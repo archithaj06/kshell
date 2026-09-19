@@ -1,10 +1,15 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * kshellnote - a character device holding one small text note.
+ * kshellnote - character devices holding small text notes.
  *
- * Userspace writes a note into /dev/kshellnote and reads it back. The note
- * lives in a fixed kernel buffer guarded by a mutex. A write that starts at
- * offset 0 replaces the note; O_APPEND writes extend it.
+ * The module registers KSHELLNOTE_COUNT minors under one major. Each minor
+ * (/dev/kshellnote0, /dev/kshellnote1, ...) is an independent note with
+ * its own buffer and mutex. Userspace writes a note in and reads it back;
+ * a write that starts at offset 0 replaces the note, O_APPEND writes
+ * extend it, and two ioctls clear it or report its length.
+ *
+ * Per-device state is found from the cdev embedded in each struct note_dev
+ * (container_of in open) and cached in filp->private_data for read/write.
  */
 #include <linux/cdev.h>
 #include <linux/device.h>
@@ -18,20 +23,25 @@
 
 #include "kshellnote_ioctl.h"
 
-#define DEVICE_NAME   "kshellnote"
-#define CLASS_NAME    "kshell"
-#define NOTE_BUF_SIZE 4096
+#define DEVICE_NAME "kshellnote"
+#define CLASS_NAME  "kshell"
 
-static char note_buf[NOTE_BUF_SIZE];
-static size_t note_len;                 /* bytes of note_buf in use */
-static DEFINE_MUTEX(note_lock);
+struct note_dev {
+	char buf[KSHELLNOTE_BUF_SIZE];
+	size_t len;                     /* bytes of buf in use */
+	struct mutex lock;
+	struct cdev cdev;
+};
 
-static dev_t note_devno;
-static struct cdev note_cdev;
+static struct note_dev note_devs[KSHELLNOTE_COUNT];
+static dev_t note_base;                 /* major + first minor */
 static struct class *note_class;
 
 static int note_open(struct inode *inode, struct file *filp)
 {
+	/* inode->i_cdev is the cdev we registered for this minor; walk back
+	 * to the enclosing note_dev and remember it for later calls. */
+	filp->private_data = container_of(inode->i_cdev, struct note_dev, cdev);
 	return 0;
 }
 
@@ -43,37 +53,39 @@ static int note_release(struct inode *inode, struct file *filp)
 static ssize_t note_read(struct file *filp, char __user *ubuf, size_t count,
 			 loff_t *ppos)
 {
+	struct note_dev *d = filp->private_data;
 	ssize_t ret;
 
-	if (mutex_lock_interruptible(&note_lock))
+	if (mutex_lock_interruptible(&d->lock))
 		return -ERESTARTSYS;
-	/* Copies min(count, note_len - *ppos) bytes and advances *ppos.
-	 * Returns 0 once *ppos reaches note_len, which is how `cat` sees EOF. */
-	ret = simple_read_from_buffer(ubuf, count, ppos, note_buf, note_len);
-	mutex_unlock(&note_lock);
+	/* Copies min(count, len - *ppos) bytes and advances *ppos. Returns 0
+	 * once *ppos reaches len, which is how `cat` sees EOF. */
+	ret = simple_read_from_buffer(ubuf, count, ppos, d->buf, d->len);
+	mutex_unlock(&d->lock);
 	return ret;
 }
 
 static ssize_t note_write(struct file *filp, const char __user *ubuf,
 			  size_t count, loff_t *ppos)
 {
+	struct note_dev *d = filp->private_data;
 	ssize_t ret;
 
-	if (mutex_lock_interruptible(&note_lock))
+	if (mutex_lock_interruptible(&d->lock))
 		return -ERESTARTSYS;
 
 	if (filp->f_flags & O_APPEND)
-		*ppos = note_len;       /* the VFS does not do this for char devs */
+		*ppos = d->len;         /* the VFS does not do this for char devs */
 	else if (*ppos == 0)
-		note_len = 0;           /* a fresh write replaces the note */
+		d->len = 0;             /* a fresh write replaces the note */
 
-	ret = simple_write_to_buffer(note_buf, NOTE_BUF_SIZE, ppos, ubuf, count);
-	if (ret > 0 && (size_t)*ppos > note_len)
-		note_len = *ppos;
+	ret = simple_write_to_buffer(d->buf, KSHELLNOTE_BUF_SIZE, ppos, ubuf, count);
+	if (ret > 0 && (size_t)*ppos > d->len)
+		d->len = *ppos;
 	else if (ret == 0 && count > 0)
 		ret = -ENOSPC;          /* buffer full: tell userspace instead of looping */
 
-	mutex_unlock(&note_lock);
+	mutex_unlock(&d->lock);
 	return ret;
 }
 
@@ -84,21 +96,22 @@ static ssize_t note_write(struct file *filp, const char __user *ubuf,
  */
 static long note_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 {
+	struct note_dev *d = filp->private_data;
 	int len;
 
 	switch (cmd) {
 	case KSHELLNOTE_IOC_CLEAR:
-		if (mutex_lock_interruptible(&note_lock))
+		if (mutex_lock_interruptible(&d->lock))
 			return -ERESTARTSYS;
-		note_len = 0;
-		mutex_unlock(&note_lock);
+		d->len = 0;
+		mutex_unlock(&d->lock);
 		return 0;
 
 	case KSHELLNOTE_IOC_GETLEN:
-		if (mutex_lock_interruptible(&note_lock))
+		if (mutex_lock_interruptible(&d->lock))
 			return -ERESTARTSYS;
-		len = note_len;
-		mutex_unlock(&note_lock);
+		len = d->len;
+		mutex_unlock(&d->lock);
 		/* put_user checks the pointer and copies one int to userspace. */
 		return put_user(len, (int __user *)arg);
 
@@ -116,28 +129,27 @@ static const struct file_operations note_fops = {
 	.unlocked_ioctl = note_ioctl,
 };
 
+/* Undo device_create/cdev_add for minors [0, n). */
+static void note_teardown(int n)
+{
+	while (n-- > 0) {
+		device_destroy(note_class, MKDEV(MAJOR(note_base), n));
+		cdev_del(&note_devs[n].cdev);
+	}
+}
+
 static int __init kshellnote_init(void)
 {
-	int ret;
-	struct device *dev;
+	int ret, i;
 
-	/* 1. Reserve a (major, minor) pair; the major shows up in /proc/devices. */
-	ret = alloc_chrdev_region(&note_devno, 0, 1, DEVICE_NAME);
+	/* 1. Reserve a major with KSHELLNOTE_COUNT consecutive minors. */
+	ret = alloc_chrdev_region(&note_base, 0, KSHELLNOTE_COUNT, DEVICE_NAME);
 	if (ret) {
 		pr_err("kshellnote: alloc_chrdev_region failed: %d\n", ret);
 		return ret;
 	}
 
-	/* 2. Bind our file_operations to that device number. */
-	cdev_init(&note_cdev, &note_fops);
-	note_cdev.owner = THIS_MODULE;
-	ret = cdev_add(&note_cdev, note_devno, 1);
-	if (ret) {
-		pr_err("kshellnote: cdev_add failed: %d\n", ret);
-		goto err_unregister;
-	}
-
-	/* 3. Create a sysfs class + device so udev creates /dev/kshellnote. */
+	/* 2. A sysfs class so udev creates the /dev nodes for us. */
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 4, 0)
 	note_class = class_create(CLASS_NAME);
 #else
@@ -146,36 +158,52 @@ static int __init kshellnote_init(void)
 	if (IS_ERR(note_class)) {
 		ret = PTR_ERR(note_class);
 		pr_err("kshellnote: class_create failed: %d\n", ret);
-		goto err_cdev;
+		goto err_unregister;
 	}
 
-	dev = device_create(note_class, NULL, note_devno, NULL, DEVICE_NAME);
-	if (IS_ERR(dev)) {
-		ret = PTR_ERR(dev);
-		pr_err("kshellnote: device_create failed: %d\n", ret);
-		goto err_class;
+	/* 3. One cdev + device per minor. */
+	for (i = 0; i < KSHELLNOTE_COUNT; i++) {
+		struct note_dev *d = &note_devs[i];
+		dev_t devno = MKDEV(MAJOR(note_base), i);
+		struct device *dev;
+
+		mutex_init(&d->lock);
+		cdev_init(&d->cdev, &note_fops);
+		d->cdev.owner = THIS_MODULE;
+
+		ret = cdev_add(&d->cdev, devno, 1);
+		if (ret) {
+			pr_err("kshellnote: cdev_add(%d) failed: %d\n", i, ret);
+			goto err_devices;
+		}
+
+		dev = device_create(note_class, NULL, devno, NULL, DEVICE_NAME "%d", i);
+		if (IS_ERR(dev)) {
+			ret = PTR_ERR(dev);
+			pr_err("kshellnote: device_create(%d) failed: %d\n", i, ret);
+			cdev_del(&d->cdev);
+			goto err_devices;
+		}
 	}
 
-	pr_info("kshellnote: loaded, major %d, /dev/%s\n", MAJOR(note_devno),
-		DEVICE_NAME);
+	pr_info("kshellnote: loaded, major %d, %d notes (/dev/%s0..%d)\n",
+		MAJOR(note_base), KSHELLNOTE_COUNT, DEVICE_NAME, KSHELLNOTE_COUNT - 1);
 	return 0;
 
-err_class:
+err_devices:
+	note_teardown(i);
 	class_destroy(note_class);
-err_cdev:
-	cdev_del(&note_cdev);
 err_unregister:
-	unregister_chrdev_region(note_devno, 1);
+	unregister_chrdev_region(note_base, KSHELLNOTE_COUNT);
 	return ret;
 }
 
 static void __exit kshellnote_exit(void)
 {
 	/* Tear down in exactly the reverse order of init. */
-	device_destroy(note_class, note_devno);
+	note_teardown(KSHELLNOTE_COUNT);
 	class_destroy(note_class);
-	cdev_del(&note_cdev);
-	unregister_chrdev_region(note_devno, 1);
+	unregister_chrdev_region(note_base, KSHELLNOTE_COUNT);
 	pr_info("kshellnote: unloaded\n");
 }
 
@@ -184,4 +212,4 @@ module_exit(kshellnote_exit);
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Hemanth Simhadri");
-MODULE_DESCRIPTION("kshell note buffer character device");
+MODULE_DESCRIPTION("kshell note buffer character devices");
