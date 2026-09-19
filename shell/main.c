@@ -1,9 +1,9 @@
 /*
  * kshell - a minimal Unix shell.
  *
- * Read a line, split it into words, run builtins in-process and everything
- * else via fork/exec. Later phases add a `note` builtin that talks to the
- * kshellnote character device driver in ../driver.
+ * Read a line, parse it into a pipeline with redirections, run builtins
+ * in-process and everything else via fork/exec. The `note` builtin talks to
+ * the kshellnote character device driver in ../driver.
  */
 #include <errno.h>
 #include <signal.h>
@@ -12,7 +12,6 @@
 #include <string.h>
 #include <unistd.h>
 
-#include "builtins.h"
 #include "exec.h"
 #include "parser.h"
 
@@ -48,12 +47,16 @@ int main(void)
             break;
         }
 
-        char *argv[MAX_ARGS];
-        if (parse_line(line, argv) == 0)
+        struct pipeline pl;
+        int ncmds = parse_line(line, &pl);
+        if (ncmds == 0)
             continue;
+        if (ncmds < 0) {
+            last_status = 2;
+            continue;
+        }
 
-        if (!run_builtin(argv, &last_status))
-            last_status = run_external(argv);
+        last_status = run_pipeline(&pl);
     }
 
     free(line);
