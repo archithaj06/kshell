@@ -3,5 +3,5 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 tar --exclude=.git --exclude='*.o' --exclude='*.ko' --exclude='shell/kshell' -cf - . \
-  | ./vm/ssh.sh 'rm -rf ~/kshell && mkdir -p ~/kshell && tar -xf - -C ~/kshell'
+  | ./vm/ssh.sh 'mkdir -p ~/kshell && tar -xf - -C ~/kshell'
 echo "synced to kshell-vm:~/kshell"
