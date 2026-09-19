@@ -1,0 +1,20 @@
+# shell build
+shell/*.o
+shell/kshell
+
+# kernel module build artifacts
+driver/*.ko
+driver/*.o
+driver/*.mod
+driver/*.mod.c
+driver/*.order
+driver/*.symvers
+driver/.*.cmd
+driver/.tmp_versions/
+driver/Module.markers
+driver/modules.builtin
+
+# editor / os
+*.swp
+.vscode/
+.DS_Store
